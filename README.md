@@ -26,6 +26,7 @@
 # 克隆仓库
 git clone https://github.com/weichzh/SetDefaultApp-V2
 cd SetDefaultApp-V2
+```
 
 ### 构建 .app 包
 
