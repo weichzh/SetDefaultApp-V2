@@ -27,13 +27,6 @@
 git clone <repository-url>
 cd SetDefaultApp-V2
 
-# 构建项目
-swift build
-
-# 运行应用程序（现在支持图形界面！）
-swift run
-```
-
 ### 构建 .app 包
 
 ```bash
