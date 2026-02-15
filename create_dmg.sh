@@ -11,7 +11,7 @@ APP_NAME_CN="默认应用程序管理器"
 DMG_NAME="SetDefaultApp-macOS"
 BUILD_DIR="build"
 TEMP_DMG_DIR="temp_dmg"
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 echo "🚀 Building ${APP_NAME} for distribution..."
 

@@ -5,7 +5,7 @@ set -e
 
 APP_NAME="默认应用程序管理器"
 BUNDLE_ID="com.example.SetDefaultApp"
-VERSION="1.0.0"
+VERSION="1.0.1"
 BUILD_DIR=".build"
 RELEASE_DIR="$BUILD_DIR/release"
 APP_DIR="$RELEASE_DIR/$APP_NAME.app"
