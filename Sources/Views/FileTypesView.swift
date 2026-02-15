@@ -2,13 +2,21 @@ import SwiftUI
 
 struct FileTypesView: View {
     @ObservedObject var launchServicesManager: LaunchServicesManager
+    var category: FileTypeCategory? = nil
     let searchText: String
     
     private var filteredFileTypes: [FileType] {
+        let types = launchServicesManager.fileTypes.filter { fileType in
+            if let category = category, category != .all {
+                return fileType.category == category
+            }
+            return true
+        }
+        
         if searchText.isEmpty {
-            return launchServicesManager.fileTypes
+            return types
         } else {
-            return launchServicesManager.fileTypes.filter { fileType in
+            return types.filter { fileType in
                 fileType.name.localizedCaseInsensitiveContains(searchText) ||
                 fileType.uti.localizedCaseInsensitiveContains(searchText) ||
                 fileType.extensions.joined(separator: " ").localizedCaseInsensitiveContains(searchText) ||
@@ -175,6 +183,12 @@ struct AppSelectorView: View {
                     Text(fileType.name)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    
+                    if !fileType.extensions.isEmpty {
+                        Text(fileType.extensions.map { ".\($0)" }.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
                 Spacer()
@@ -186,6 +200,27 @@ struct AppSelectorView: View {
             .padding()
             
             Divider()
+            
+            // 清除默认应用选项
+            if fileType.defaultApp != nil {
+                Button(action: {
+                    launchServicesManager.clearDefaultApplication(for: fileType)
+                    dismiss()
+                }) {
+                    HStack {
+                        Image(systemName: "xmark.circle")
+                            .foregroundColor(.red)
+                        Text("无默认程序 (清除设置)")
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    .padding()
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                
+                Divider()
+            }
             
             // 搜索框
             HStack {
@@ -261,6 +296,7 @@ struct AppSelectorView: View {
 #Preview {
     FileTypesView(
         launchServicesManager: LaunchServicesManager(),
+        category: nil,
         searchText: ""
     )
 } 

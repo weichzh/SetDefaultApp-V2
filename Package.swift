@@ -17,6 +17,7 @@ let package = Package(
             name: "SetDefaultApp",
             dependencies: [],
             path: "Sources",
+            exclude: ["Info.plist"],
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
             ]

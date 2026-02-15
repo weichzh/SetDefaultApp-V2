@@ -166,3 +166,4 @@ coverage/
 
 # SPM artifacts
 Package.resolved 
+.alma-snapshots

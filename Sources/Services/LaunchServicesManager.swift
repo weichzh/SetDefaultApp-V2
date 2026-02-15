@@ -186,22 +186,6 @@ class LaunchServicesManager: ObservableObject {
         return osTypeMapping[osType]
     }
     
-    private func getUTIForExtension(_ extension: String) -> String? {
-        // 使用现代 UTType API（如果可用）
-        if #available(macOS 11.0, *) {
-            if let utType = UTType(filenameExtension: `extension`) {
-                return utType.identifier
-            }
-        }
-        
-        // 回退到旧 API
-        return UTTypeCreatePreferredIdentifierForTag(
-            kUTTagClassFilenameExtension,
-            `extension` as CFString,
-            nil
-        )?.takeRetainedValue() as String?
-    }
-    
     private func processCustomFileType(_ uti: String, typeName: String, extensions: [String], appInfo: AppInfo, into fileTypesDict: inout [String: FileType]) -> Bool {
         // 过滤掉无效的扩展名
         let validExtensions = extensions.filter { !$0.isEmpty && $0 != "*" }
@@ -299,15 +283,8 @@ class LaunchServicesManager: ObservableObject {
         }
         
         // 尝试获取系统提供的描述
-        if #available(macOS 11.0, *) {
-            if let utType = UTType(uti) {
-                return utType.localizedDescription ?? utType.preferredFilenameExtension?.uppercased() ?? uti
-            }
-        }
-        
-        // 回退到旧 API
-        if let description = UTTypeCopyDescription(uti as CFString)?.takeRetainedValue() as String? {
-            return description
+        if let utType = UTType(uti) {
+            return utType.localizedDescription ?? utType.preferredFilenameExtension?.uppercased() ?? uti
         }
         
         // 自定义描述映射
@@ -356,27 +333,25 @@ class LaunchServicesManager: ObservableObject {
     private func getUTIExtensions(_ uti: String, docType: [String: Any]) -> [String] {
         var extensions: Set<String> = []
         
-        // 首先从应用程序声明的扩展名获取
+        // 1. 首先尝试从系统获取扩展名 (最准确)
+        if let utType = UTType(uti) {
+            if let preferredExt = utType.preferredFilenameExtension {
+                extensions.insert(preferredExt)
+            }
+            extensions.formUnion(utType.tags[.filenameExtension] ?? [])
+        }
+        
+        // 如果系统能识别出扩展名，就直接使用系统定义的
+        if !extensions.isEmpty {
+            return Array(extensions).sorted()
+        }
+        
+        // 2. 如果系统不知道这个 UTI (比如是 App 私有的)，再从 Info.plist 获取
         if let bundleExtensions = docType["CFBundleTypeExtensions"] as? [String] {
             extensions.formUnion(bundleExtensions.filter { !$0.isEmpty })
         }
         
-        // 然后从系统获取扩展名
-        if #available(macOS 11.0, *) {
-            if let utType = UTType(uti) {
-                if let preferredExt = utType.preferredFilenameExtension {
-                    extensions.insert(preferredExt)
-                }
-                extensions.formUnion(utType.tags[.filenameExtension] ?? [])
-            }
-        } else {
-            // 回退到旧 API
-            if let cfExtensions = UTTypeCopyAllTagsWithClass(uti as CFString, kUTTagClassFilenameExtension)?.takeRetainedValue() as? [String] {
-                extensions.formUnion(cfExtensions.filter { !$0.isEmpty })
-            }
-        }
-        
-        // 常见扩展名映射作为最后的回退
+        // 3. 常见扩展名映射作为最后的回退
         let extensionMappings: [String: [String]] = [
             "public.plain-text": ["txt", "text"],
             "public.rtf": ["rtf"],
@@ -441,6 +416,14 @@ class LaunchServicesManager: ObservableObject {
     }
     
     private func getDefaultApplication(for uti: String) -> AppInfo? {
+        if uti.hasPrefix("url.scheme.") {
+            let scheme = String(uti.dropFirst("url.scheme.".count))
+            if let url = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "\(scheme)://")!) {
+                return createAppInfo(from: url)
+            }
+            return nil
+        }
+        
         guard let bundleIdentifier = LSCopyDefaultRoleHandlerForContentType(
             uti as CFString,
             .all
@@ -453,21 +436,137 @@ class LaunchServicesManager: ObservableObject {
         return nil
     }
     
+    func resolveFileType(for url: URL) -> FileType? {
+        // 获取文件的 Content Type
+        guard let resourceValues = try? url.resourceValues(forKeys: [.contentTypeKey]),
+              let type = resourceValues.contentType else {
+            return nil
+        }
+        
+        let uti = type.identifier
+        
+        // 1. 尝试在现有列表中查找
+        if let existing = fileTypes.first(where: { $0.uti == uti }) {
+            return existing
+        }
+        
+        // 2. 如果没找到，动态创建一个
+        let name = type.localizedDescription ?? uti
+        let extensions = type.tags[.filenameExtension] ?? []
+        
+        // 获取默认应用
+        let defaultApp = getDefaultApplication(for: uti)
+        
+        // 获取所有可用应用
+        let availableApps = getAvailableApps(for: uti)
+        
+        let newFileType = FileType(
+            uti: uti,
+            name: name,
+            extensions: Array(extensions),
+            defaultApp: defaultApp,
+            availableApps: availableApps
+        )
+        
+        // 可选：将新发现的类型加入列表（或者只返回给调用者）
+        // 这里我们暂时只返回，不修改主列表，以免打乱扫描结果
+        return newFileType
+    }
+    
+    private func getAvailableApps(for uti: String) -> [AppInfo] {
+        guard let handlers = LSCopyAllRoleHandlersForContentType(uti as CFString, .all)?.takeRetainedValue() as? [String] else {
+            return []
+        }
+        
+        var apps: [AppInfo] = []
+        for bundleId in handlers {
+            // 避免重复（虽然 handlers 应该是唯一的，但为了保险）
+            if apps.contains(where: { $0.bundleIdentifier == bundleId }) { continue }
+            
+            // 尝试从缓存的 applications 列表中查找
+            if let existingApp = applications.first(where: { $0.bundleIdentifier == bundleId }) {
+                apps.append(existingApp)
+            } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId),
+                      let appInfo = createAppInfo(from: url) {
+                apps.append(appInfo)
+            }
+        }
+        
+        return apps.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+    }
+    
     func setDefaultApplication(_ app: AppInfo, for fileType: FileType) {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleIdentifier) {
+            if fileType.uti.hasPrefix("url.scheme.") {
+                let scheme = String(fileType.uti.dropFirst("url.scheme.".count))
+                // URL schemes 处理
+                NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenURLsWithScheme: scheme) { error in
+                    if let error = error {
+                        print("Failed to set default application for scheme \(scheme): \(error)")
+                    } else {
+                        DispatchQueue.main.async {
+                            if let index = self.fileTypes.firstIndex(where: { $0.uti == fileType.uti }) {
+                                self.fileTypes[index].defaultApp = app
+                            }
+                        }
+                    }
+                }
+            } else {
+                // UTI 处理
+                // 注意：NSWorkspace.setDefaultApplication(at:toOpenContentType:completion:) 需要 macOS 12.0+
+                if #available(macOS 12.0, *), let type = UTType(fileType.uti) {
+                    NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenContentType: type) { error in
+                        if let error = error {
+                            print("Failed to set default application for UTI \(fileType.uti): \(error)")
+                        } else {
+                            DispatchQueue.main.async {
+                                if let index = self.fileTypes.firstIndex(where: { $0.uti == fileType.uti }) {
+                                    self.fileTypes[index].defaultApp = app
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // 回退到旧的 LS API (虽然被废弃，但在 macOS 13 下仍然可用且是唯一同步方法)
+                    let status = LSSetDefaultRoleHandlerForContentType(
+                        fileType.uti as CFString,
+                        .all,
+                        app.bundleIdentifier as CFString
+                    )
+                    
+                    if status == noErr {
+                        if let index = fileTypes.firstIndex(where: { $0.uti == fileType.uti }) {
+                            fileTypes[index].defaultApp = app
+                        }
+                    } else {
+                        print("Failed to set default application for \(fileType.uti): \(status)")
+                    }
+                }
+            }
+        }
+    }
+    
+    func clearDefaultApplication(for fileType: FileType) {
+        // 注意：NSWorkspace 没有直接清除默认应用的 API。
+        // LSSetDefault... 传递 nil 在 Swift 中会报错，因为它期望非空 CFString。
+        // 我们只能尝试使用 CoreServices 的低级 API，或者暂时禁用此功能以避免崩溃。
+        
+        // 尝试寻找一种变通方法：将其重置为 Finder?
+        // 实际上，清除默认应用通常意味着让系统重新弹出选择框，这通常是通过删除 LS 数据库条目实现的，没有公开 API。
+        
+        print("Warning: Clearing default application is not fully supported via public APIs.")
+        
+        // 我们可以尝试将状态更新为 nil，但这不会改变系统行为
+        // 为了安全起见，我们暂时只更新 UI，或者什么都不做
+        
+        /*
+        // 如果必须尝试清除，可以使用这个黑科技（可能无效或有风险）：
         let status = LSSetDefaultRoleHandlerForContentType(
             fileType.uti as CFString,
             .all,
-            app.bundleIdentifier as CFString
+            kLSUnknownCreator // 或者其他特殊值
         )
-        
-        if status == noErr {
-            // 更新本地数据
-            if let index = fileTypes.firstIndex(where: { $0.uti == fileType.uti }) {
-                fileTypes[index].defaultApp = app
-            }
-        } else {
-            print("Failed to set default application for \(fileType.uti): \(status)")
-        }
+        */
     }
     
     func refreshFileType(_ fileType: FileType) {
@@ -485,4 +584,11 @@ class LaunchServicesManager: ObservableObject {
     func loadApplications() {
         loadApplicationsAndFileTypes()
     }
-} 
+    
+    private func getUTIForExtension(_ extension: String) -> String? {
+        if let utType = UTType(filenameExtension: `extension`) {
+            return utType.identifier
+        }
+        return nil
+    }
+}

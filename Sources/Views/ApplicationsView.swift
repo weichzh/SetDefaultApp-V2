@@ -17,10 +17,12 @@ struct ApplicationsView: View {
     
     var body: some View {
         List(filteredApplications) { app in
-            ApplicationRow(
-                app: app,
-                launchServicesManager: launchServicesManager
-            )
+            NavigationLink(destination: ApplicationDetailsView(app: app, launchServicesManager: launchServicesManager)) {
+                ApplicationRow(
+                    app: app,
+                    launchServicesManager: launchServicesManager
+                )
+            }
         }
         .listStyle(.inset)
     }
@@ -29,7 +31,6 @@ struct ApplicationsView: View {
 struct ApplicationRow: View {
     let app: AppInfo
     @ObservedObject var launchServicesManager: LaunchServicesManager
-    @State private var showingDetails = false
     
     private var supportedFileTypes: [FileType] {
         return launchServicesManager.fileTypes.filter { fileType in
@@ -58,73 +59,47 @@ struct ApplicationRow: View {
                 Text(app.bundleIdentifier)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+            }
+            
+            Spacer()
+            
+            VStack(alignment: .trailing, spacing: 4) {
                 Text("支持 \(supportedFileTypes.count) 种文件类型")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 
                 if isDefaultForAny {
-                    Text("已设为部分文件类型的默认应用")
+                    Text("已设为部分默认")
                         .font(.caption2)
                         .foregroundColor(.green)
                 }
             }
-            
-            Spacer()
-            
-            VStack(spacing: 8) {
-                Button("详情") {
-                    showingDetails = true
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                
-                if !supportedFileTypes.isEmpty {
-                    Button("设为全部默认") {
-                        setAsDefaultForAll()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-            }
         }
         .padding(.vertical, 4)
-        .sheet(isPresented: $showingDetails) {
-            ApplicationDetailsView(
-                app: app,
-                launchServicesManager: launchServicesManager
-            )
-        }
-    }
-    
-    private func setAsDefaultForAll() {
-        for fileType in supportedFileTypes {
-            launchServicesManager.setDefaultApplication(app, for: fileType)
-        }
     }
 }
 
 struct ApplicationDetailsView: View {
     let app: AppInfo
     @ObservedObject var launchServicesManager: LaunchServicesManager
-    @Environment(\.dismiss) private var dismiss
     @State private var showingAlternativeAppSelector = false
     @State private var selectedFileType: FileType?
+    @State private var selectedTypeIDs: Set<UUID> = []
+    @State private var isSelectionMode = false
     
-    // 获取该应用程序支持的所有文件类型（不管当前默认应用是什么）
     private var supportedFileTypes: [FileType] {
         return launchServicesManager.fileTypes.filter { fileType in
             fileType.availableApps.contains { $0.bundleIdentifier == app.bundleIdentifier }
         }.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
     
-    // 统计该应用作为默认应用的文件类型数量
     private var defaultFileTypesCount: Int {
         return supportedFileTypes.filter { $0.defaultApp?.bundleIdentifier == app.bundleIdentifier }.count
     }
     
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
+            // Header
             HStack {
                 if let icon = app.icon {
                     Image(nsImage: icon)
@@ -140,11 +115,13 @@ struct ApplicationDetailsView: View {
                     Text(app.bundleIdentifier)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .textSelection(.enabled)
                     
                     Text(app.path)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
+                        .textSelection(.enabled)
                     
                     HStack {
                         Text("支持 \(supportedFileTypes.count) 种文件类型")
@@ -161,162 +138,95 @@ struct ApplicationDetailsView: View {
                 
                 Spacer()
                 
-                Button("完成") {
-                    dismiss()
+                if !supportedFileTypes.isEmpty {
+                    if isSelectionMode {
+                        Button("取消选择") {
+                            isSelectionMode = false
+                            selectedTypeIDs.removeAll()
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Button("批量管理") {
+                            isSelectionMode = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
             }
             .padding()
+            .background(Color(NSColor.controlBackgroundColor))
             
-            Divider()
-            
-            VStack(alignment: .leading) {
+            // Batch Action Bar
+            if isSelectionMode {
                 HStack {
-                    Text("支持的文件类型")
-                        .font(.headline)
+                    Button(action: {
+                        if selectedTypeIDs.count == supportedFileTypes.count {
+                            selectedTypeIDs.removeAll()
+                        } else {
+                            selectedTypeIDs = Set(supportedFileTypes.map { $0.id })
+                        }
+                    }) {
+                        Text(selectedTypeIDs.count == supportedFileTypes.count ? "取消全选" : "全选")
+                    }
                     
                     Spacer()
                     
-                    if !supportedFileTypes.isEmpty {
-                        Button("全部设为默认") {
-                            setAsDefaultForAll()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    Text("已选 \(selectedTypeIDs.count) 项")
+                        .foregroundColor(.secondary)
+                    
+                    Button("设为默认") {
+                        setBatchAsDefault()
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selectedTypeIDs.isEmpty)
                 }
                 .padding(.horizontal)
-                
-                if supportedFileTypes.isEmpty {
-                    VStack {
-                        Spacer()
-                        Image(systemName: "doc.questionmark")
-                            .font(.system(size: 48))
-                            .foregroundColor(.secondary)
-                        Text("此应用程序未声明支持任何文件类型")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Text("这可能是应用程序配置问题或者它只支持特殊功能")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                        Spacer()
-                    }
-                    .padding()
-                } else {
-                    List(supportedFileTypes) { fileType in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(fileType.name)
-                                    .font(.headline)
-                                
-                                HStack {
-                                    Text("UTI:")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                    Text(fileType.uti)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                                
-                                if !fileType.extensions.isEmpty {
-                                    HStack {
-                                        Text("扩展名:")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        Text(fileType.extensions.map { ".\($0)" }.joined(separator: ", "))
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                
-                                // 显示当前默认应用程序信息
-                                if let defaultApp = fileType.defaultApp {
-                                    HStack {
-                                        Text("当前默认:")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        
-                                        if defaultApp.bundleIdentifier == app.bundleIdentifier {
-                                            Text("本应用")
-                                                .font(.caption)
-                                                .foregroundColor(.green)
-                                                .fontWeight(.medium)
-                                        } else {
-                                            Text(defaultApp.name)
-                                                .font(.caption)
-                                                .foregroundColor(.orange)
-                                        }
-                                    }
-                                }
+                .padding(.vertical, 8)
+                .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                Divider()
+            }
+            
+            Divider()
+            
+            // List
+            if supportedFileTypes.isEmpty {
+                VStack {
+                    Spacer()
+                    Image(systemName: "doc.questionmark")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary)
+                    Text("此应用程序未声明支持任何文件类型")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding()
+            } else {
+                List(supportedFileTypes) { fileType in
+                    FileTypeRowInAppDetails(
+                        fileType: fileType,
+                        app: app,
+                        isSelectionMode: isSelectionMode,
+                        isSelected: selectedTypeIDs.contains(fileType.id),
+                        onToggleSelection: {
+                            if selectedTypeIDs.contains(fileType.id) {
+                                selectedTypeIDs.remove(fileType.id)
+                            } else {
+                                selectedTypeIDs.insert(fileType.id)
                             }
-                            
-                            Spacer()
-                            
-                            VStack(spacing: 4) {
-                                if fileType.defaultApp?.bundleIdentifier == app.bundleIdentifier {
-                                    // 当前应用是默认应用
-                                    HStack {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.green)
-                                        Text("当前默认")
-                                            .font(.caption)
-                                            .foregroundColor(.green)
-                                            .fontWeight(.medium)
-                                    }
-                                    
-                                    Button("更改") {
-                                        selectedFileType = fileType
-                                        showingAlternativeAppSelector = true
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                } else {
-                                    // 其他应用是默认应用或无默认应用
-                                    if let defaultApp = fileType.defaultApp {
-                                        VStack(spacing: 2) {
-                                            HStack {
-                                                if let icon = defaultApp.icon {
-                                                    Image(nsImage: icon)
-                                                        .resizable()
-                                                        .frame(width: 16, height: 16)
-                                                }
-                                                Text(defaultApp.name)
-                                                    .font(.caption2)
-                                                    .foregroundColor(.orange)
-                                                    .lineLimit(1)
-                                            }
-                                            
-                                            Button("替换为本应用") {
-                                                launchServicesManager.setDefaultApplication(app, for: fileType)
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .controlSize(.small)
-                                        }
-                                    } else {
-                                        // 无默认应用
-                                        VStack(spacing: 2) {
-                                            Text("无默认应用")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                            
-                                            Button("设为默认") {
-                                                launchServicesManager.setDefaultApplication(app, for: fileType)
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .controlSize(.small)
-                                        }
-                                    }
-                                }
-                            }
+                        },
+                        onChange: {
+                            selectedFileType = fileType
+                            showingAlternativeAppSelector = true
+                        },
+                        onSetDefault: {
+                            launchServicesManager.setDefaultApplication(app, for: fileType)
                         }
-                        .padding(.vertical, 2)
-                    }
+                    )
                 }
             }
         }
-        .frame(width: 750, height: 650)
+        .navigationTitle(app.name)
         .sheet(isPresented: $showingAlternativeAppSelector) {
             if let fileType = selectedFileType {
                 AlternativeAppSelectorView(
@@ -328,14 +238,148 @@ struct ApplicationDetailsView: View {
         }
     }
     
-    private func setAsDefaultForAll() {
-        for fileType in supportedFileTypes {
+    private func setBatchAsDefault() {
+        let typesToSet = supportedFileTypes.filter { selectedTypeIDs.contains($0.id) }
+        for fileType in typesToSet {
             launchServicesManager.setDefaultApplication(app, for: fileType)
         }
+        isSelectionMode = false
+        selectedTypeIDs.removeAll()
     }
 }
 
-// 添加一个专门的应用选择器组件
+struct FileTypeRowInAppDetails: View {
+    let fileType: FileType
+    let app: AppInfo
+    let isSelectionMode: Bool
+    let isSelected: Bool
+    let onToggleSelection: () -> Void
+    let onChange: () -> Void
+    let onSetDefault: () -> Void
+    
+    var body: some View {
+        HStack {
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .foregroundColor(isSelected ? .accentColor : .secondary)
+                    .font(.title3)
+                    .onTapGesture {
+                        onToggleSelection()
+                    }
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(fileType.name)
+                    .font(.headline)
+                
+                HStack {
+                    Text("UTI:")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(fileType.uti)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+                
+                if !fileType.extensions.isEmpty {
+                    HStack {
+                        Text("扩展名:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(fileType.extensions.map { ".\($0)" }.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                if let defaultApp = fileType.defaultApp {
+                    HStack {
+                        Text("当前默认:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        if defaultApp.bundleIdentifier == app.bundleIdentifier {
+                            Text("本应用")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                                .fontWeight(.medium)
+                        } else {
+                            Text(defaultApp.name)
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if isSelectionMode {
+                    onToggleSelection()
+                }
+            }
+            
+            Spacer()
+            
+            if !isSelectionMode {
+                VStack(spacing: 4) {
+                    if fileType.defaultApp?.bundleIdentifier == app.bundleIdentifier {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text("当前默认")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                                .fontWeight(.medium)
+                        }
+                        
+                        Button("更改") {
+                            onChange()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    } else {
+                        if let defaultApp = fileType.defaultApp {
+                            VStack(spacing: 2) {
+                                HStack {
+                                    if let icon = defaultApp.icon {
+                                        Image(nsImage: icon)
+                                            .resizable()
+                                            .frame(width: 16, height: 16)
+                                    }
+                                    Text(defaultApp.name)
+                                        .font(.caption2)
+                                        .foregroundColor(.orange)
+                                        .lineLimit(1)
+                                }
+                                
+                                Button("替换为本应用") {
+                                    onSetDefault()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        } else {
+                            VStack(spacing: 2) {
+                                Text("无默认应用")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Button("设为默认") {
+                                    onSetDefault()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 struct AlternativeAppSelectorView: View {
     let fileType: FileType
     let currentApp: AppInfo
@@ -358,7 +402,6 @@ struct AlternativeAppSelectorView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // 标题栏
             HStack {
                 VStack(alignment: .leading) {
                     Text("更改默认应用程序")
@@ -366,6 +409,12 @@ struct AlternativeAppSelectorView: View {
                     Text("为 \(fileType.name) 选择新的默认应用")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                    
+                    if !fileType.extensions.isEmpty {
+                        Text(fileType.extensions.map { ".\($0)" }.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
                 Spacer()
@@ -378,7 +427,27 @@ struct AlternativeAppSelectorView: View {
             
             Divider()
             
-            // 当前默认应用
+            // 清除默认应用选项
+            if fileType.defaultApp != nil {
+                Button(action: {
+                    launchServicesManager.clearDefaultApplication(for: fileType)
+                    dismiss()
+                }) {
+                    HStack {
+                        Image(systemName: "xmark.circle")
+                            .foregroundColor(.red)
+                        Text("无默认程序 (清除设置)")
+                            .foregroundColor(.primary)
+                        Spacer()
+                    }
+                    .padding()
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                
+                Divider()
+            }
+            
             HStack {
                 Text("当前默认:")
                     .font(.subheadline)
@@ -401,7 +470,6 @@ struct AlternativeAppSelectorView: View {
             
             Divider()
             
-            // 搜索框
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
@@ -410,7 +478,6 @@ struct AlternativeAppSelectorView: View {
             }
             .padding()
             
-            // 应用程序列表
             if filteredApps.isEmpty {
                 VStack {
                     Spacer()
@@ -472,4 +539,4 @@ struct AlternativeAppSelectorView: View {
         launchServicesManager: LaunchServicesManager(),
         searchText: ""
     )
-} 
+}
