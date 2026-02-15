@@ -515,7 +515,7 @@ class LaunchServicesManager: ObservableObject {
                 // UTI 处理
                 // 注意：NSWorkspace.setDefaultApplication(at:toOpenContentType:completion:) 需要 macOS 12.0+
                 if #available(macOS 12.0, *), let type = UTType(fileType.uti) {
-                    NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenContentType: type) { error in
+                    NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { error in
                         if let error = error {
                             print("Failed to set default application for UTI \(fileType.uti): \(error)")
                         } else {
